@@ -25,7 +25,6 @@
         .refresh-text { font-size: 0.75rem; color: var(--text-muted); }
         .btn-refresh { background: none; border: none; color: var(--primary-color); font-size: 0.75rem; font-weight: bold; cursor: pointer; margin-left: 8px; }
 
-        /* 搜尋與GPS狀態欄 */
         .search-box { width: 100%; margin-bottom: 6px; }
         .search-input { width: 100%; padding: 8px 12px; font-size: 0.9rem; border: 1px solid #ced4da; border-radius: 6px; outline: none; }
         .search-input:focus { border-color: var(--primary-color); }
@@ -68,16 +67,15 @@
     </div>
     <div class="gps-status">
         <span id="gpsText">📍 正在獲取 GPS 定位...</span>
-        <span id="dbText">💾 載入車站數據中...</span>
+        <span id="dbText">💾 車站數據載入中...</span>
     </div>
 
     <div id="dashboardArea">
-        <div class="loader">正在初始化系統...</div>
+        <div class="loader">正在安全載入常用班次...</div>
     </div>
 </div>
 
 <script>
-    // ⚙️ 常用路線清單
     const MY_ROUTES_CONFIG = [
         { route: "215X", direction: "往 藍田(廣田邨)總站", stop_id: "48184733EFE9D3E3", stop_name: "尖沙咀麼地道" },
         { route: "14X", direction: "往 油塘", stop_id: "C175ACB534E8C15C", stop_name: "尖沙咀麼地道" },
@@ -89,8 +87,8 @@
     let countdownInterval;
     let secondsLeft = 30;
     let globalEtaMap = new Map(); 
-    let allStopsDatabase = []; // 儲存全港九巴車站坐標
-    let userLocation = null;   // 儲存使用者 GPS 坐標
+    let allStopsDatabase = []; 
+    let userLocation = null;   
 
     const dashboardArea = document.getElementById('dashboardArea');
     const updateTimeSpan = document.getElementById('updateTime');
@@ -100,7 +98,6 @@
     const gpsText = document.getElementById('gpsText');
     const dbText = document.getElementById('dbText');
 
-    // 計算兩個經緯度之間的距離 (單位: 公尺)
     function getDistance(lat1, lon1, lat2, lon2) {
         const R = 6371e3;
         const phi1 = lat1 * Math.PI / 180;
@@ -114,38 +111,35 @@
         return R * c;
     }
 
-    // 獲取手機 GPS 定位
+    // 獨立處理 GPS 獲取，絕不卡死主執行緒
     function initGPS() {
         if (navigator.geolocation) {
-            navigator.geolocation.watchPosition(
+            navigator.geolocation.getCurrentPosition(
                 (position) => {
-                    userLocation = {
-                        lat: position.coords.latitude,
-                        lng: position.coords.longitude
-                    };
-                    gpsText.innerText = `📍 定位成功 (誤差: ${Math.round(position.coords.accuracy)}m)`;
+                    userLocation = { lat: position.coords.latitude, lng: position.coords.longitude };
+                    gpsText.innerText = `📍 定位成功 (${Math.round(position.coords.accuracy)}m)`;
                 },
-                (err) => {
-                    gpsText.innerText = `❌ 定位失敗: 權限不足或未開啟 GPS`;
+                (err) => { 
+                    gpsText.innerText = `❌ 定位未開啟 (不影響常用清單)`; 
+                    console.log("GPS Error:", err.message);
                 },
-                { enableHighAccuracy: true, timeout: 10000 }
+                { enableHighAccuracy: false, timeout: 5000 } // 限時 5 秒，逾時自動放行
             );
         } else {
-            gpsText.innerText = `❌ 瀏覽器不支援 GPS`;
+            gpsText.innerText = `❌ 不支援 GPS`;
         }
     }
 
-    // 載入全香港九巴車站數據庫
     async function initStopsDatabase() {
         try {
-            const res = await fetch('https://data.etabus.gov.hk/v1/transport/kmb/stop');[cite: 1]
+            const res = await fetch('https://data.etabus.gov.hk/v1/transport/kmb/stop');
             if(res.ok) {
                 const json = await res.json();
                 allStopsDatabase = json.data || [];
-                dbText.innerText = `💾 數據庫已就緒 (${allStopsDatabase.length} 站)`;[cite: 1]
+                dbText.innerText = `💾 搜尋功能已就緒`;
             }
         } catch {
-            dbText.innerText = `❌ 無法載入車站資料`;
+            dbText.innerText = `❌ 車站數據加載失敗`;
         }
     }
 
@@ -158,14 +152,12 @@
         return { mins: diffMins, timeString: formattedTime };
     }
 
-    // 核心渲染邏輯
     async function renderDashboard(filterQuery = "") {
         const query = filterQuery.trim().toUpperCase();
         let html = '';
 
         const isQueryInConfig = MY_ROUTES_CONFIG.some(c => c.route.toUpperCase() === query);
 
-        // 情境 A：顯示首頁或常用清單篩選
         if (!query || isQueryInConfig) {
             MY_ROUTES_CONFIG.forEach(cfg => {
                 if (query && cfg.route.toUpperCase() !== query) return;
@@ -173,40 +165,35 @@
                 let routeEtas = allEta.filter(item => item.route === cfg.route && item.eta);
                 html += generateRouteCardHtml(cfg, routeEtas);
             });
-            dashboardArea.innerHTML = html;
+            dashboardArea.innerHTML = html || `<div class="no-data">暫無常用路線資料</div>`;
         } 
-        // 情境 B：使用者搜尋了「全新路線」
         else {
-            dashboardArea.innerHTML = `<div class="loader">正在尋找距離最近的 ${query} 號公車站...</div>`;
+            if (allStopsDatabase.length === 0) {
+                dashboardArea.innerHTML = `<div class="no-data">⏳ 正在下載全港車站數據，請稍候再搜尋新路線...</div>`;
+                return;
+            }
             
-            // 1. 尋找全港所有會停靠此搜尋路線的車站
+            dashboardArea.innerHTML = `<div class="loader">🔍 正在尋找最近的 ${query} 號公車站...</div>`;
+            
             let matchedStops = [];
             try {
                 const res = await fetch(`https://data.etabus.gov.hk/v1/transport/kmb/route-stop`);
                 if(res.ok) {
                     const json = await res.json();
-                    // 過濾出該路線的所有站點代碼
-                    const stopIdsForRoute = json.data
-                        .filter(item => item.route === query)
-                        .map(item => item.stop);
-
-                    // 與全局數據庫比對，抓出經緯度
-                    matchedStops = allStopsDatabase.filter(stop => stopIdsForRoute.includes(stop.stop));[cite: 1]
+                    const stopIdsForRoute = json.data.filter(item => item.route === query).map(item => item.stop);
+                    matchedStops = allStopsDatabase.filter(stop => stopIdsForRoute.includes(stop.stop));
                 }
             } catch {}
 
-            // 2. 如果有 GPS 且找到了站點，計算誰最近
             if (userLocation && matchedStops.length > 0) {
                 matchedStops.forEach(stop => {
                     stop.distance = getDistance(userLocation.lat, userLocation.lng, parseFloat(stop.lat), parseFloat(stop.long));
                 });
-                // 按距離由近到遠排序
                 matchedStops.sort((a, b) => a.distance - b.distance);
                 
                 const nearestStop = matchedStops[0];
                 const distanceText = nearestStop.distance > 1000 ? `${(nearestStop.distance/1000).toFixed(1)}km` : `${Math.round(nearestStop.distance)}m`;
 
-                // 3. 向 API 請求這個最近車站的即時預報
                 try {
                     const etaRes = await fetch(`https://data.etabus.gov.hk/v1/transport/kmb/stop-eta/${nearestStop.stop}`);
                     if(etaRes.ok) {
@@ -222,9 +209,9 @@
                     }
                 } catch {}
             } else if (!userLocation) {
-                html = `<div class="no-data">請開啟 GPS 定位才能為你尋找最近的 "${query}" 車站</div>`;
+                html = `<div class="no-data">⚠️ 請允許 GPS 定位以尋找最近的 "${query}" 車站</div>`;
             } else {
-                html = `<div class="no-data">找不到 "${query}" 路線，請確認號碼是否正確</div>`;
+                html = `<div class="no-data">❌ 找不到 "${query}" 路線附近車站</div>`;
             }
             
             dashboardArea.innerHTML = html;
@@ -270,7 +257,6 @@
     }
 
     async function updateDashboard() {
-        // 如果目前正在查詢清單外的新路線，暫停常用清單的背景刷新以免覆蓋畫面
         const query = searchInput.value.trim().toUpperCase();
         const isQueryInConfig = MY_ROUTES_CONFIG.some(c => c.route.toUpperCase() === query);
         
@@ -312,7 +298,6 @@
         }, 1000);
     }
 
-    // 當使用者輸入停止時才發送網路請求 (防抖延遲 500ms)
     let searchTimeout;
     searchInput.addEventListener('input', (e) => {
         clearTimeout(searchTimeout);
@@ -323,11 +308,10 @@
 
     manualRefreshBtn.addEventListener('click', updateDashboard);
     
-    // 初始化啟動
-    initGPS();
-    initStopsDatabase().then(() => {
-        updateDashboard();
-    });
+    // 🚀 安全的依序執行：常用班次第一優先，GPS 與數據庫靠後非同步載入
+    updateDashboard();   
+    initGPS();          
+    initStopsDatabase(); 
 </script>
 
 </body>
