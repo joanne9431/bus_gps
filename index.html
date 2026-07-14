@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>巴士簡易報時板</title>
+    <style>
+        :root {
+            --primary-color: #E11B22;
+            --text-color: #2b303a;
+            --text-muted: #70757a;
+            --bg-color: #f8f9fa;
+            --border-color: #e9ecef;
+            --now-color: #dc3545;
+            --soon-color: #fd7e14;
+            --later-color: #198754;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+        body { background-color: var(--bg-color); color: var(--text-color); padding: 12px; display: flex; justify-content: center; }
+        .container { width: 100%; max-width: 500px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); padding: 16px; }
+        
+        header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border-color); }
+        header h1 { font-size: 1.1rem; color: var(--text-color); }
+        .refresh-text { font-size: 0.75rem; color: var(--text-muted); }
+        .btn-refresh { background: none; border: none; color: var(--primary-color); font-size: 0.75rem; font-weight: bold; cursor: pointer; margin-left: 8px; }
+
+        .route-card { border-bottom: 1px solid var(--border-color); padding: 10px 0; }
+        .route-card:last-child { border-bottom: none; }
+        
+        .route-meta { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 0.85rem; }
+        .route-info { font-weight: bold; }
+        .route-num { color: var(--primary-color); font-size: 1.1rem; font-weight: 900; margin-right: 6px; }
+        .stop-tag { color: var(--text-muted); font-size: 0.75rem; background: #f1f3f5; padding: 1px 6px; border-radius: 4px; }
+
+        .eta-list { display: flex; flex-direction: column; gap: 4px; }
+        .eta-item { display: flex; justify-content: space-between; font-size: 0.85rem; color: #4a5056; }
+        
+        .countdown { font-weight: bold; min-width: 65px; text-align: right; }
+        .t-now { color: var(--now-color); animation: blink 1.5s infinite; }
+        .t-soon { color: var(--soon-color); }
+        .t-later { color: var(--later-color); }
+
+        @keyframes blink { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
+        .no-data { text-align: center; color: var(--text-muted); font-size: 0.8rem; padding: 8px 0; }
+        .loader { text-align: center; color: var(--text-muted); font-size: 0.85rem; padding: 20px 0; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <h1>🚌 巴士動態看板</h1>
+        <div class="refresh-text">
+            <span id="updateTime">--:--</span> (<span id="countdownText">30s</span>)
+            <button class="btn-refresh" id="manualRefreshBtn">更新</button>
+        </div>
+    </header>
+
+    <div id="dashboardArea">
+        <div class="loader">正在載入班次...</div>
+    </div>
+</div>
+
+<script>
+    const MY_ROUTES_CONFIG = [
+        {
+            route: "215X",
+            direction: "往 藍田(廣田邨)總站",
+            stop_id: "48184733EFE9D3E3", 
+            stop_name: "尖沙咀麼地道"
+        },
+        {
+            route: "14X",
+            direction: "往 油塘",
+            stop_id: "C175ACB534E8C15C", 
+            stop_name: "尖沙咀麼地道"
+        },
+        {
+            route: "98A",
+            direction: "往 坑口(北)",
+            stop_id: "3F9AE21DC3A540B9", 
+            stop_name: "牛頭角站"
+        },
+        {
+            route: "95M",
+            direction: "往 翠林",
+            stop_id: "00A529823BEBABA7", 
+            stop_name: "觀塘（雅麗道）總站"
+        },
+        {
+            route: "95",
+            direction: "往 翠林",
+            stop_id: "C91C122CFC3FF66B", 
+            stop_name: "佐敦炮台街"
+        }
+    ];
+
+    let countdownInterval;
+    let secondsLeft = 30;
+
+    const dashboardArea = document.getElementById('dashboardArea');
+    const updateTimeSpan = document.getElementById('updateTime');
+    const countdownTextSpan = document.getElementById('countdownText');
+    const manualRefreshBtn = document.getElementById('manualRefreshBtn');
+
+    function calculateMins(etaString) {
+        if (!etaString) return null;
+        const now = new Date();
+        const etaTime = new Date(etaString);
+        const diffMins = Math.max(0, Math.floor((etaTime - now) / 1000 / 60));
+        const formattedTime = etaTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+        return { mins: diffMins, timeString: formattedTime };
+    }
+
+    async function updateDashboard() {
+        try {
+            const uniqueStopIds = [...new Set(MY_ROUTES_CONFIG.map(cfg => cfg.stop_id))];
+            const fetchPromises = uniqueStopIds.map(async (id) => {
+                try {
+                    const res = await fetch(`https://data.etabus.gov.hk/v1/transport/kmb/stop-eta/${id}`);
+                    return { id, data: res.ok ? (await res.json()).data : [] };
+                } catch { return { id, data: [] }; }
+            });
+
+            const results = await Promise.all(fetchPromises);
+            const etaMap = new Map(results.map(r => [r.id, r.data]));
+
+            let html = '';
+
+            MY_ROUTES_CONFIG.forEach(cfg => {
+                const allEta = etaMap.get(cfg.stop_id) || [];
+                let routeEtas = allEta.filter(item => item.route === cfg.route && item.eta);
+                routeEtas.sort((a, b) => new Date(a.eta) - new Date(b.eta));
+                const nextTwo = routeEtas.slice(0, 2);
+
+                html += `
+                    <div class="route-card">
+                        <div class="route-meta">
+                            <div class="route-info"><span class="route-num">${cfg.route}</span>${cfg.direction}</div>
+                            <span class="stop-tag">📍 ${cfg.stop_name}</span>
+                        </div>
+                        <div class="eta-list">
+                `;
+
+                if (nextTwo.length === 0) {
+                    html += `<div class="no-data">暫無班次</div>`;
+                } else {
+                    nextTwo.forEach(item => {
+                        const timeInfo = calculateMins(item.eta);
+                        if (!timeInfo) return;
+
+                        let styleClass = 't-later';
+                        let label = `${timeInfo.mins} 分鐘`;
+
+                        if (timeInfo.mins === 0) { styleClass = 't-now'; label = '即將到站'; }
+                        else if (timeInfo.mins <= 4) { styleClass = 't-soon'; }
+
+                        // 這裡已移除 (尾站: ${item.dest_tc})
+                        html += `
+                            <div class="eta-item">
+                                <span>預算 ${timeInfo.timeString}</span>
+                                <span class="countdown ${styleClass}">${label}</span>
+                            </div>
+                        `;
+                    });
+                }
+                html += `</div></div>`;
+            });
+
+            dashboardArea.innerHTML = html;
+            updateTimeSpan.innerText = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+            resetTimer();
+        } catch (e) {
+            dashboardArea.innerHTML = `<div class="no-data">更新失敗: ${e.message}</div>`;
+        }
+    }
+
+    function resetTimer() {
+        clearInterval(countdownInterval);
+        secondsLeft = 30;
+        countdownTextSpan.innerText = `${secondsLeft}s`;
+        countdownInterval = setInterval(() => {
+            secondsLeft--;
+            if (secondsLeft <= 0) { updateDashboard(); } 
+            else { countdownTextSpan.innerText = `${secondsLeft}s`; }
+        }, 1000);
+    }
+
+    manualRefreshBtn.addEventListener('click', updateDashboard);
+    updateDashboard();
+</script>
+
+</body>
+</html>
