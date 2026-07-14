@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>巴士簡易報時板 + GPS搜尋</title>
+    <title>巴士簡易報時板</title>
     <style>
         :root {
             --primary-color: #E11B22;
@@ -71,7 +71,7 @@
     </div>
 
     <div id="dashboardArea">
-        <div class="loader">正在安全載入常用班次...</div>
+        <div class="loader">正在載入常用班次...</div>
     </div>
 </div>
 
@@ -111,7 +111,6 @@
         return R * c;
     }
 
-    // 獨立處理 GPS 獲取，絕不卡死主執行緒
     function initGPS() {
         if (navigator.geolocation) {
             navigator.geolocation.getCurrentPosition(
@@ -119,11 +118,8 @@
                     userLocation = { lat: position.coords.latitude, lng: position.coords.longitude };
                     gpsText.innerText = `📍 定位成功 (${Math.round(position.coords.accuracy)}m)`;
                 },
-                (err) => { 
-                    gpsText.innerText = `❌ 定位未開啟 (不影響常用清單)`; 
-                    console.log("GPS Error:", err.message);
-                },
-                { enableHighAccuracy: false, timeout: 5000 } // 限時 5 秒，逾時自動放行
+                (err) => { gpsText.innerText = `❌ 定位未開啟 (不影響常用清單)`; },
+                { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
             );
         } else {
             gpsText.innerText = `❌ 不支援 GPS`;
@@ -149,7 +145,31 @@
         const etaTime = new Date(etaString);
         const diffMins = Math.max(0, Math.floor((etaTime - now) / 1000 / 60));
         const formattedTime = etaTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
-        return { mins: diffMins, timeString: formattedTime };
+        return { mins: diffMins, timeString: formattedTime, rawTime: etaTime.getTime() };
+    }
+
+    // 核心過濾與去重複機制
+    function filterAndSortEtas(routeEtas) {
+        // 1. 依照時間排序
+        routeEtas.sort((a, b) => new Date(a.eta) - new Date(b.eta));
+        
+        // 2. 移除時間完全重複的班次
+        const uniqueEtas = [];
+        const seenTimes = new Set();
+        
+        routeEtas.forEach(item => {
+            const timeInfo = calculateMins(item.eta);
+            if (!timeInfo) return;
+            
+            // 如果這個時間（小時:分鐘）還沒出現過，才放進清單
+            if (!seenTimes.has(timeInfo.timeString)) {
+                seenTimes.add(timeInfo.timeString);
+                uniqueEtas.push(item);
+            }
+        });
+        
+        // 3. 只取前 2 班非重複的車
+        return uniqueEtas.slice(0, 2);
     }
 
     async function renderDashboard(filterQuery = "") {
@@ -219,8 +239,8 @@
     }
 
     function generateRouteCardHtml(cfg, routeEtas) {
-        routeEtas.sort((a, b) => new Date(a.eta) - new Date(b.eta));
-        const nextTwo = routeEtas.slice(0, 2);
+        // 在這裡套用新的「去重複」過濾邏輯
+        const nextTwo = filterAndSortEtas(routeEtas);
 
         let cardHtml = `
             <div class="route-card">
@@ -308,7 +328,6 @@
 
     manualRefreshBtn.addEventListener('click', updateDashboard);
     
-    // 🚀 安全的依序執行：常用班次第一優先，GPS 與數據庫靠後非同步載入
     updateDashboard();   
     initGPS();          
     initStopsDatabase(); 
